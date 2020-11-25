@@ -343,6 +343,8 @@ func mainWithExitCode() int {
 		}
 	}
 
+	go checkBlockHash()
+
 	if internalServer != nil || publicServer != nil || chain != nil {
 		// start fiat rates downloader only if not shutting down immediately
 		initFiatRatesDownloader(index, *blockchain)
@@ -742,4 +744,44 @@ func initFiatRatesDownloader(db *db.RocksDB, configfile string) {
 		glog.Infof("Starting %v FiatRates downloader...", config.FiatRates)
 		go fiatRates.Run()
 	}
+}
+
+func checkBlockHash() {
+	glog.Infof("checkBlockHash starting")
+	diff := 0
+	best, _, err := index.GetBestBlock()
+	if err != nil {
+		glog.Errorf("checkBlockHash GetBestBlock: %v", err)
+		return
+	}
+	for height := uint32(1); height <= best; height++ {
+		bi, err := index.GetBlockInfo(height)
+		if err != nil {
+			glog.Errorf("checkBlockHash db GetBlockInfo %d : %v", height, err)
+			return
+		}
+		var retryCount int
+		var hash string
+		for {
+			hash, err = chain.GetBlockHash(height)
+			if err != nil {
+				retryCount++
+				if retryCount > 5 {
+					glog.Errorf("checkBlockHash chain GetBlockHash %d : %v", height, err)
+					return
+				}
+				time.Sleep(time.Millisecond * 1000)
+			} else {
+				break
+			}
+		}
+		if bi.Hash != hash {
+			glog.Infof("checkBlockHash diff height %d, db %s, chain %s", height, bi.Hash, hash)
+			diff++
+		}
+		if height%10000 == 0 {
+			glog.Infof("checkBlockHash processing block %d", height)
+		}
+	}
+	glog.Infof("checkBlockHash finished, found %d differences", diff)
 }
