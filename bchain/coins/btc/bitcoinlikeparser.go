@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"regexp"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	vlq "github.com/bsm/go-vlq"
@@ -360,28 +361,27 @@ func (p *BitcoinLikeParser) taprootAddrFromExtKey(extKey *hdkeychain.ExtendedKey
 	return btcutil.NewAddressWitnessTaproot(b, p.Params)
 }
 
-func (p *BitcoinLikeParser) addrDescFromExtKey(extKey *hdkeychain.ExtendedKey, bip string) (bchain.AddressDescriptor, error) {
+func (p *BitcoinLikeParser) addrDescFromExtKey(extKey *hdkeychain.ExtendedKey, descriptor *bchain.XpubDescriptor) (bchain.AddressDescriptor, error) {
 	var a btcutil.Address
 	var err error
-	if bip != "" {
+	switch descriptor.Type {
+	case bchain.P2PKH:
+		a, err = extKey.Address(p.Params)
+	case bchain.P2SH:
+		// redeemScript <witness version: OP_0><len pubKeyHash: 20><20-byte-pubKeyHash>
+		pubKeyHash := btcutil.Hash160(extKey.PubKeyBytes())
+		redeemScript := make([]byte, len(pubKeyHash)+2)
+		redeemScript[0] = 0
+		redeemScript[1] = byte(len(pubKeyHash))
+		copy(redeemScript[2:], pubKeyHash)
+		hash := btcutil.Hash160(redeemScript)
+		a, err = btcutil.NewAddressScriptHashFromHash(hash, p.Params)
+	case bchain.P2WSH:
+		a, err = btcutil.NewAddressWitnessPubKeyHash(btcutil.Hash160(extKey.PubKeyBytes()), p.Params)
+	case bchain.P2TR:
 		a, err = p.taprootAddrFromExtKey(extKey)
-	} else {
-		version := extKey.Version()
-		if version == p.XPubMagicSegwitP2sh {
-			// redeemScript <witness version: OP_0><len pubKeyHash: 20><20-byte-pubKeyHash>
-			pubKeyHash := btcutil.Hash160(extKey.PubKeyBytes())
-			redeemScript := make([]byte, len(pubKeyHash)+2)
-			redeemScript[0] = 0
-			redeemScript[1] = byte(len(pubKeyHash))
-			copy(redeemScript[2:], pubKeyHash)
-			hash := btcutil.Hash160(redeemScript)
-			a, err = btcutil.NewAddressScriptHashFromHash(hash, p.Params)
-		} else if version == p.XPubMagicSegwitNative {
-			a, err = btcutil.NewAddressWitnessPubKeyHash(btcutil.Hash160(extKey.PubKeyBytes()), p.Params)
-		} else {
-			// default to P2PKH address
-			a, err = extKey.Address(p.Params)
-		}
+	default:
+		return nil, errors.New("Unsupported xpub descriptor type")
 	}
 	if err != nil {
 		return nil, err
@@ -389,33 +389,128 @@ func (p *BitcoinLikeParser) addrDescFromExtKey(extKey *hdkeychain.ExtendedKey, b
 	return txscript.PayToAddrScript(a)
 }
 
-func parseXpub(xpub string) (string, string) {
-	r, _ := regexp.Compile(`tr\(\[\w+/(\d+)'/.*\](\w+)`)
-	match := r.FindStringSubmatch(xpub)
-	if len(match) == 3 {
-		return match[2], match[1]
+func (p *BitcoinLikeParser) xpubDescriptorFromXpub(xpub string) (*bchain.XpubDescriptor, error) {
+	var descriptor bchain.XpubDescriptor
+	extKey, err := hdkeychain.NewKeyFromString(xpub, p.Params.Base58CksumHasher)
+	if err != nil {
+		return nil, err
 	}
-	return xpub, ""
+	descriptor.Xpub = xpub
+	descriptor.XpubDescriptor = xpub
+	if extKey.Version() == p.XPubMagicSegwitP2sh {
+		descriptor.Type = bchain.P2SH
+		descriptor.Bip = "49"
+	} else if extKey.Version() == p.XPubMagicSegwitNative {
+		descriptor.Type = bchain.P2WSH
+		descriptor.Bip = "84"
+	} else {
+		descriptor.Type = bchain.P2PKH
+		descriptor.Bip = "44"
+	}
+	descriptor.ChangeIndexes = []uint32{0, 1}
+	descriptor.ExtKey = extKey
+	return &descriptor, nil
+}
+
+var (
+	xpubDesriptorRegex    *regexp.Regexp
+	typeSubexpIndex       int
+	bipSubexpIndex        int
+	xpubSubexpIndex       int
+	changeSubexpIndex     int
+	changeListSubexpIndex int
+)
+
+func init() {
+	xpubDesriptorRegex, _ = regexp.Compile(`(?P<type>(sh|wsh|pk|pkh|wpkh|tr))\((\[\w+/(?P<bip>\d+)'/\d+'?/\d+'?\])?(?P<xpub>\w+)(/(({(?P<changelist>\d+(,\d+)*)})|(?P<change>\d+))/\*)?\)`)
+	typeSubexpIndex = xpubDesriptorRegex.SubexpIndex("type")
+	bipSubexpIndex = xpubDesriptorRegex.SubexpIndex("bip")
+	xpubSubexpIndex = xpubDesriptorRegex.SubexpIndex("xpub")
+	changeListSubexpIndex = xpubDesriptorRegex.SubexpIndex("changelist")
+	changeSubexpIndex = xpubDesriptorRegex.SubexpIndex("change")
+	if changeSubexpIndex < 0 {
+		panic("Invalid bitcoinparser xpubDesriptorRegex")
+	}
+}
+
+// ParseXpub parses xpub (or xpub descriptor) and returns XpubDescriptor
+func (p *BitcoinLikeParser) ParseXpub(xpub string) (*bchain.XpubDescriptor, error) {
+	match := xpubDesriptorRegex.FindStringSubmatch(xpub)
+	if len(match) > changeSubexpIndex {
+		var descriptor bchain.XpubDescriptor
+		descriptor.XpubDescriptor = xpub
+		m := match[typeSubexpIndex]
+		switch m {
+		case "sh":
+			descriptor.Type = bchain.P2SH
+			descriptor.Bip = "49"
+		case "wsh":
+			descriptor.Type = bchain.P2WSH
+			descriptor.Bip = "84"
+		case "tr":
+			descriptor.Type = bchain.P2TR
+			descriptor.Bip = "86"
+		case "pkh":
+			descriptor.Type = bchain.P2PKH
+			descriptor.Bip = "44"
+		default:
+			return nil, errors.Errorf("Xpub descriptor %s is not supported", m)
+		}
+		if len(match[bipSubexpIndex]) > 0 {
+			descriptor.Bip = match[bipSubexpIndex]
+		}
+		descriptor.Xpub = match[xpubSubexpIndex]
+		extKey, err := hdkeychain.NewKeyFromString(descriptor.Xpub, p.Params.Base58CksumHasher)
+		if err != nil {
+			return nil, err
+		}
+		descriptor.ExtKey = extKey
+		if len(match[changeSubexpIndex]) > 0 {
+			change, err := strconv.ParseUint(match[changeSubexpIndex], 10, 32)
+			if err != nil {
+				return nil, err
+			}
+			descriptor.ChangeIndexes = []uint32{uint32(change)}
+		} else {
+			if len(match[changeListSubexpIndex]) > 0 {
+				changes := strings.Split(match[changeListSubexpIndex], ",")
+				if len(changes) == 0 {
+					return nil, errors.New("Invalid xpub descriptor, cannot parse change")
+				}
+				descriptor.ChangeIndexes = make([]uint32, len(changes))
+				for i, ch := range changes {
+					change, err := strconv.ParseUint(ch, 10, 32)
+					if err != nil {
+						return nil, err
+					}
+					descriptor.ChangeIndexes[i] = uint32(change)
+
+				}
+			} else {
+				// default to {0,1}
+				descriptor.ChangeIndexes = []uint32{0, 1}
+			}
+
+		}
+		return &descriptor, nil
+	}
+	return p.xpubDescriptorFromXpub(xpub)
+
 }
 
 // DeriveAddressDescriptors derives address descriptors from given xpub for listed indexes
-func (p *BitcoinLikeParser) DeriveAddressDescriptors(xpub string, change uint32, indexes []uint32) ([]bchain.AddressDescriptor, error) {
-	parsedXpub, bip := parseXpub(xpub)
-	extKey, err := hdkeychain.NewKeyFromString(parsedXpub, p.Params.Base58CksumHasher)
-	if err != nil {
-		return nil, err
-	}
-	changeExtKey, err := extKey.Derive(change)
-	if err != nil {
-		return nil, err
-	}
+func (p *BitcoinLikeParser) DeriveAddressDescriptors(descriptor *bchain.XpubDescriptor, change uint32, indexes []uint32) ([]bchain.AddressDescriptor, error) {
 	ad := make([]bchain.AddressDescriptor, len(indexes))
+	changeExtKey, err := descriptor.ExtKey.(*hdkeychain.ExtendedKey).Derive(change)
+	if err != nil {
+		return nil, err
+	}
 	for i, index := range indexes {
 		indexExtKey, err := changeExtKey.Derive(index)
 		if err != nil {
 			return nil, err
 		}
-		ad[i], err = p.addrDescFromExtKey(indexExtKey, bip)
+		ad[i], err = p.addrDescFromExtKey(indexExtKey, descriptor)
 		if err != nil {
 			return nil, err
 		}
@@ -424,16 +519,11 @@ func (p *BitcoinLikeParser) DeriveAddressDescriptors(xpub string, change uint32,
 }
 
 // DeriveAddressDescriptorsFromTo derives address descriptors from given xpub for addresses in index range
-func (p *BitcoinLikeParser) DeriveAddressDescriptorsFromTo(xpub string, change uint32, fromIndex uint32, toIndex uint32) ([]bchain.AddressDescriptor, error) {
+func (p *BitcoinLikeParser) DeriveAddressDescriptorsFromTo(descriptor *bchain.XpubDescriptor, change uint32, fromIndex uint32, toIndex uint32) ([]bchain.AddressDescriptor, error) {
 	if toIndex <= fromIndex {
 		return nil, errors.New("toIndex<=fromIndex")
 	}
-	parsedXpub, bip := parseXpub(xpub)
-	extKey, err := hdkeychain.NewKeyFromString(parsedXpub, p.Params.Base58CksumHasher)
-	if err != nil {
-		return nil, err
-	}
-	changeExtKey, err := extKey.Derive(change)
+	changeExtKey, err := descriptor.ExtKey.(*hdkeychain.ExtendedKey).Derive(change)
 	if err != nil {
 		return nil, err
 	}
@@ -443,7 +533,7 @@ func (p *BitcoinLikeParser) DeriveAddressDescriptorsFromTo(xpub string, change u
 		if err != nil {
 			return nil, err
 		}
-		ad[index-fromIndex], err = p.addrDescFromExtKey(indexExtKey, bip)
+		ad[index-fromIndex], err = p.addrDescFromExtKey(indexExtKey, descriptor)
 		if err != nil {
 			return nil, err
 		}
@@ -452,13 +542,9 @@ func (p *BitcoinLikeParser) DeriveAddressDescriptorsFromTo(xpub string, change u
 }
 
 // DerivationBasePath returns base path of xpub
-func (p *BitcoinLikeParser) DerivationBasePath(xpub string) (string, error) {
-	parsedXpub, bip := parseXpub(xpub)
-	extKey, err := hdkeychain.NewKeyFromString(parsedXpub, p.Params.Base58CksumHasher)
-	if err != nil {
-		return "", err
-	}
+func (p *BitcoinLikeParser) DerivationBasePath(descriptor *bchain.XpubDescriptor) (string, error) {
 	var c string
+	extKey := descriptor.ExtKey.(*hdkeychain.ExtendedKey)
 	cn := extKey.ChildNum()
 	if cn >= 0x80000000 {
 		cn -= 0x80000000
@@ -468,14 +554,5 @@ func (p *BitcoinLikeParser) DerivationBasePath(xpub string) (string, error) {
 	if extKey.Depth() != 3 {
 		return "unknown/" + c, nil
 	}
-	if bip == "" {
-		if extKey.Version() == p.XPubMagicSegwitP2sh {
-			bip = "49"
-		} else if extKey.Version() == p.XPubMagicSegwitNative {
-			bip = "84"
-		} else {
-			bip = "44"
-		}
-	}
-	return "m/" + bip + "'/" + strconv.Itoa(int(p.Slip44)) + "'/" + c, nil
+	return "m/" + descriptor.Bip + "'/" + strconv.Itoa(int(p.Slip44)) + "'/" + c, nil
 }
