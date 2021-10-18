@@ -213,7 +213,11 @@ git checkout v6.22.1
 CFLAGS=-fPIC CXXFLAGS=-fPIC make release
 ```
 
-Setup variables for gorocksdb
+```
+CFLAGS=-fPIC CXXFLAGS=-fPIC PORTABLE=1 make release
+```
+
+Setup variables for gorocksdb: https://github.com/tecbot/gorocksdb
 
 ```
 export CGO_CFLAGS="-I/path/to/rocksdb/include"
