@@ -1,6 +1,6 @@
 [![Go Report Card](https://goreportcard.com/badge/trezor/blockbook)](https://goreportcard.com/report/trezor/blockbook)
 
-# Blockbook
+# Blockbook for Blocknet
 
 **Blockbook** is back-end service for Trezor wallet. Main features of **Blockbook** are:
 
