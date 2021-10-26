@@ -4,7 +4,8 @@ FROM blockbook-build:latest
 
 RUN apt-get update && \
     apt-get upgrade -y && \
-    apt-get install -y devscripts debhelper make dh-systemd dh-exec && \
+    apt-get install -y devscripts systemd debhelper make dh-exec && \
+    ( apt-get install -y -o Dpkg::Options::=--force-unsafe-io dh-systemd || true ) && \
     apt-get clean
 
 ADD gpg-keys /tmp/gpg-keys
