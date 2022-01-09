@@ -1,0 +1,68 @@
+{
+  "coin": {
+    "name": "Crown Testnet",
+    "shortcut": "tCRW",
+    "label": "Crown Testnet",
+    "alias": "crown_testnet"
+  },
+  "ports": {
+    "backend_rpc": 8099,
+    "backend_message_queue": 38399,
+    "blockbook_internal": 9099,
+    "blockbook_public": 9199
+  },
+  "ipc": {
+    "rpc_url_template": "http://127.0.0.1:{{.Ports.BackendRPC}}",
+    "rpc_user": "rpc",
+    "rpc_pass": "rpc",
+    "rpc_timeout": 25,
+    "message_queue_binding_template": "tcp://127.0.0.1:{{.Ports.BackendMessageQueue}}"
+  },
+  "backend": {
+    "package_name": "backend-crown-testnet",
+    "package_revision": "satoshilabs-1",
+    "system_user": "crown",
+    "version": "0.21.99.0",
+    "binary_url": "https://www.dropbox.com/s/ewnnwb467uw83d3/linux.tar.xz?dl=0",
+    "verification_type": "",
+    "verification_source": "",
+    "extract_command": "tar -C backend -xf ",
+    "exclude_files": [
+      "bin/crown-tx",
+      "bin/crown-wallet"
+    ],
+    "exec_command_template": "{{.Env.BackendInstallPath}}/{{.Coin.Alias}}/bin/crownd -datadir={{.Env.BackendDataPath}}/{{.Coin.Alias}}/backend -conf={{.Env.BackendInstallPath}}/{{.Coin.Alias}}/{{.Coin.Alias}}.conf -pid=/run/{{.Coin.Alias}}/{{.Coin.Alias}}.pid",
+    "logrotate_files_template": "{{.Env.BackendDataPath}}/{{.Coin.Alias}}/backend/*.log",
+    "postinst_script_template": "",
+    "service_type": "forking",
+    "service_additional_params_template": "",
+    "protect_memory": true,
+    "mainnet": false,
+    "server_config_file": "bitcoin_like.conf",
+    "client_config_file": "bitcoin_like_client.conf",
+    "additional_params": {
+    }
+  },
+  "blockbook": {
+    "package_name": "blockbook-crown",
+    "system_user": "blockbook-crown",
+    "internal_binding_template": ":{{.Ports.BlockbookInternal}}",
+    "public_binding_template": ":{{.Ports.BlockbookPublic}}",
+    "explorer_url": "",
+    "additional_params": "",
+    "block_chain": {
+      "parse": true,
+      "subversion": "/Satoshi:21.99.0/",
+      "mempool_workers": 8,
+      "mempool_sub_workers": 2,
+      "block_addresses_to_keep": 300,
+      "xpub_magic": 76067358,
+      "slip44": 72,
+      "additional_params": {}
+    }
+  },
+  "meta": {
+    "package_maintainer": "walkjivefly",
+    "package_maintainer_email": "mark@walkjivefly.com"
+  }
+}
